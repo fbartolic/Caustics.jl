@@ -1579,7 +1579,7 @@ function lens_eq_det_jac(z::ComplexF64, params::Dict, nlenses::Int=2)
     end
 end
 
-function critical_and_caustic_curves(params::Dict, npts::Int=200, nlenses::Int=2)
+function critical_and_caustic_curves(params::Dict, nlenses::Int=2, npts::Int=200)
     ϕ = collect(LinRange(-π, π, npts))
     coeffs = zeros(ComplexF64, npts, 2*nlenses + 1)
     z_cr = zeros(ComplexF64, npts, 2*nlenses)
