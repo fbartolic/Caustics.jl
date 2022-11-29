@@ -13,14 +13,15 @@ import .Utils: match_points
 mutable struct Segment 
     z::Vector{ComplexF64}
     parity::Int
+    length::Float64
 end
 
-function get_segment_length(segment::Segment)
+function get_segment_length(z::Vector{ComplexF64})
     res = 0.
-    for i in 1:length(segment.z) - 1
-        res += abs(segment.z[i+1] - segment.z[i])
+    for i in 1:length(z) - 1
+        res += abs(z[i+1] - z[i])
     end
-    res += abs(segment.z[1] - segment.z[end])
+    res += abs(z[1] - z[end])
     return res 
 end
 
@@ -155,7 +156,7 @@ function process_open_segments(segments)
     for seg in segments_split
         z, z_mask, z_parity = seg["z"], seg["z_mask"], seg["z_parity"]
         if (sum(z_mask) > 0) && length(z) >= 3
-            push!(segments_final, Segment(z, z_parity[1]))
+            push!(segments_final, Segment(z, z_parity[1], get_segment_length(z)))
         end
     end
     return segments_final
@@ -184,7 +185,7 @@ function get_segments(z::Matrix{ComplexF64}, z_mask::Matrix{Bool}, z_parity::Mat
     # Process closed segments
     segments_closed = Segment[]
     for seg in segments_interim_closed
-        push!(segments_closed, Segment(seg["z"], seg["z_parity"][1]))
+        push!(segments_closed, Segment(seg["z"], seg["z_parity"][1], 0.))
     end
 
     # Process open segments if there are any
@@ -202,15 +203,15 @@ function merge_two_segments(seg1::Segment, seg2::Segment, ctype::String)
     if ctype == "hh"
         seg2.z = reverse(seg2.z) # flip
         seg2.parity = -seg2.parity # flip parity
-        return Segment(vcat(seg2.z, seg1.z), seg2.parity)
+        return Segment(vcat(seg2.z, seg1.z), seg2.parity, seg1.length + seg2.length)
     elseif ctype == "tt"
         seg2.z = reverse(seg2.z) # flip
         seg2.parity = -seg2.parity # flip parity
-        return Segment(vcat(seg1.z, seg2.z), seg2.parity)
+        return Segment(vcat(seg1.z, seg2.z), seg2.parity, seg1.length + seg2.length)
     elseif ctype == "th"
-        return Segment(vcat(seg1.z, seg2.z), seg2.parity)
+        return Segment(vcat(seg1.z, seg2.z), seg2.parity, seg1.length + seg2.length)
     elseif ctype == "ht"
-        return Segment(vcat(seg2.z, seg1.z), seg2.parity)
+        return Segment(vcat(seg2.z, seg1.z), seg2.parity, seg1.length + seg2.length)
     end
 end
 
@@ -342,7 +343,7 @@ function merge_open_segments(segments_open)
 
     while length(segments_open) > 0
         # Sort segments by length from shortest to longest
-        segments_open = sort(segments_open, by=seg -> get_segment_length(seg))
+        segments_open = sort(segments_open, by=seg -> seg.length)
 
         # Set the shortest segment as the active segment
         seg_active = segments_open[1]
@@ -372,7 +373,7 @@ function merge_open_segments(segments_open)
     end
 
     # Remove segments for which the distance between the end points is less than 10% of the segment length
-    segments_closed = filter(seg -> abs(seg.z[end] - seg.z[1]) < 0.5*get_segment_length(seg), segments_closed)
+    segments_closed = filter(seg -> abs(seg.z[end] - seg.z[1]) < 0.5*get_segment_length(seg.z), segments_closed)
 
     return segments_closed
 end
