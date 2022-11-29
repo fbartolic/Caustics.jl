@@ -83,8 +83,8 @@ function limb_sampling_refine(
     z::Matrix{ComplexF64},
     z_mask::Matrix{Bool},
     z_parity::Matrix{Int},
+    nlenses=2::Int,
     npts_add=20::Int, 
-    nlenses=2::Int
 )
     Δz = abs2.(z[2:end, :] .- z[1:end-1, :])  
     Δz = ifelse.(z_mask[2:end, :] .| z_mask[1:end-1, :], Δz, zeros(Float64, size(Δz)))
@@ -229,9 +229,7 @@ We use four criterions to determine if the segments should be connected:
         such that the second point is the connection point, the distance
         between two potential connection points of the segments must be
         less than the distance between the other two points.
-    3. The smaller of the two angles formed by the intersection of `line1`
-        and `line2` must be less than `max_ang` degrees.
-    4. The distance between two potential connection points must be less
+    3. The distance between two potential connection points must be less
         than `max_dist`.
 
 If the distance between the two connection points is less than `min_dist`,
@@ -246,8 +244,7 @@ function connection_condition(
     seg2::Segment,
     ctype::String,
     min_dist=1e-05::Float64,
-    max_dist=1e-01::Float64,
-    max_ang=60.0::Float64,
+    max_dist=0.08::Float64,
 )
     if ctype == "th"
         line1 = [seg1.z[end-1], seg1.z[end]]
@@ -286,14 +283,6 @@ function connection_condition(
     end
 
     # Criterion 3
-    vec1 = (line1[2] - line1[1]) / abs(line1[2] - line1[1])
-    vec2 = (line2[2] - line2[1]) / abs(line2[2] - line2[1])
-    α = acos(vec1.re.*vec2.re + vec1.im.*vec2.im) 
-    if (180 - rad2deg(α)) > max_ang
-        return false
-    end
-
-    # Criterion 4
     if abs2(line1[2] - line2[2]) > max_dist^2
         return false
     end
@@ -309,15 +298,12 @@ merging algorithm is as follows:
     1. Select shortest (in length) open segment, set it as the active segment.
     2. Find segment closest in distance to the active segment which satisfies 
         the connection condition. Merge active segment with that segment.
-    3. Repeat step 2. until no more segments can be merged. If there are no 
-        more segments to merge, the active segment is added to the list of 
-        closed segments and the process terminates. If there are open 
+    3. Repeat step 2. until either of these two conditions are satisfied
+    4. If there are no more segments to merge, the active segment is added to 
+        the list of closed segments and the process terminates. If there are open 
         segments left, start again from step 1.
 """
-function merge_open_segments(segments)
-    # Sort segments by length from smallest to largest
-    segments = sort(segments, by=seg -> get_segment_length(seg))
-    segments_closed = Segment[] # Merged segments 
+function merge_open_segments(segments_open)
 
     function get_connection_distance(seg1, seg2, ctype)
         if ctype == "th"
@@ -331,12 +317,7 @@ function merge_open_segments(segments)
         end
     end
 
-    segment_active = segments[1]
-    deleteat!(segments, 1)
-
-    while true
-        # Search over all segments and connection types to find a segment to 
-        # connect to (closest distance and valid connection)
+    function find_best_connection(seg_active, segments)
         min_dist = Inf
         min_dist_index = 0
         min_dist_ctype = ""
@@ -344,8 +325,8 @@ function merge_open_segments(segments)
         for i in 1:length(segments)
             seg = segments[i]
             for ctype in ["th", "ht", "hh", "tt"]
-                if connection_condition(segment_active, seg, ctype)
-                    dist = get_connection_distance(segment_active, seg, ctype)
+                if connection_condition(seg_active, seg, ctype)
+                    dist = get_connection_distance(seg_active, seg, ctype)
                     if dist < min_dist
                         min_dist = dist
                         min_dist_index = i
@@ -354,28 +335,46 @@ function merge_open_segments(segments)
                 end
             end
         end
+        return min_dist_index, min_dist_ctype
+    end
 
-        # If we found a segment to connect to, merge the two segments
-        if min_dist_index != 0
-            segment_active = merge_two_segments(segment_active, segments[min_dist_index], min_dist_ctype)
-            deleteat!(segments, min_dist_index)
+    segments_closed = Segment[] # Merged segments 
 
-        # Otherwise save the active segment to merged segments and select a new one or exit the loop
-        else
-            # Save the active segment 
-            push!(segments_closed, segment_active)
+    while length(segments_open) > 0
+        # Sort segments by length from shortest to longest
+        segments_open = sort(segments_open, by=seg -> get_segment_length(seg))
 
-            if length(segments) > 0
-                # Start a new active segment
-                segments = sort(segments, by=seg -> get_segment_length(seg))
-                segment_active = segments[1]
-                deleteat!(segments, 1)
+        # Set the shortest segment as the active segment
+        seg_active = segments_open[1]
+        deleteat!(segments_open, 1)
+ 
+        stopping_criterion = false
+
+        while stopping_criterion == false
+            # Search over all segments and connection types to find a segment to 
+            # connect to (closest distance and valid connection)
+            min_dist_index, min_dist_ctype = find_best_connection(seg_active, segments_open)
+
+            # If the distance between the end points of the active segment is less than 2% of its 
+            # length, set the stopping criterion to true
+
+            # If we found a segment to connect to, merge the two segments
+            if min_dist_index != 0 
+                seg_active = merge_two_segments(seg_active, segments_open[min_dist_index], min_dist_ctype)
+                deleteat!(segments_open, min_dist_index)
+            # Otherwise save the active segment to merged segments and exit the loop
             else
-                # No more segments to merge
-                return segments_closed
+                # Save the active segment 
+                push!(segments_closed, seg_active)
+                stopping_criterion = true
             end
         end
     end
+
+    # Remove segments for which the distance between the end points is less than 10% of the segment length
+    segments_closed = filter(seg -> abs(seg.z[end] - seg.z[1]) < 0.5*get_segment_length(seg), segments_closed)
+
+    return segments_closed
 end
 
 """
@@ -410,17 +409,32 @@ function mag_extended_source(
         println("WARNING: npts_init < 100. This may cause issues with the contour construction algorithm.")
     end
 
-    s, q = params["s"], params["q"]
-    a, e1 = 0.5*s, q/(1 + q)
-    _params = Dict("a" => a, "e1" => e1)
-    x_cm = 0.5*s*(1-q)/(1 + q)
-    w0 -= x_cm
+    if nlenses == 2
+        s, q = params["s"], params["q"]
+        a, e1, e2 = 0.5*s, q/(1 + q), 1. - q/(1 + q)
+        _params = Dict("a" => a, "e1" => e1)
+
+        # Shift w by x_cm
+        x_cm = 0.5*s*(1-q)/(1 + q)
+        w0 -= x_cm
+    elseif nlenses == 3
+        s, q, q3, r3, psi = params["s"], params["q"], params["q3"], params["r3"], params["psi"]
+        a, e1, e2 = 0.5*s, q*q/(1 + q + q3), q/(1 + q + q3)
+        r3 = r3*exp(1im*psi)
+        _params = Dict("a" => a, "r3" => r3, "e1" => e1, "e2" => e2)
+
+        # Shift w by x_cm
+        x_cm = 0.5*s*(1-q)/(1 + q)
+        w0 -= x_cm
+    else
+        throw(ArgumentError("`nlenses` has to be set to be <= 3."))
+    end
 
     # Initial sampling: uniformly sample `npts_init` points on the limb and then 
     # add additional `npts_init` points in 10 refinement steps
     θ, z, z_mask, z_parity = limb_sampling_initial(w0, ρ, _params, nlenses, npts_init)
     for _ in 1:10
-        θ, z, z_mask, z_parity = limb_sampling_refine(w0, ρ, _params, θ, z, z_mask, z_parity, Int(round(npts_init/10.)))
+        θ, z, z_mask, z_parity = limb_sampling_refine(w0, ρ, _params, θ, z, z_mask, z_parity, nlenses, Int(round(npts_init/10.)))
     end
 
     # Final sampling: Add `npts_add` in a loop until the relative change in the
@@ -432,7 +446,7 @@ function mag_extended_source(
     i = 0
     while (err_rel > rtol) && (i < maxiter)
         # Refine sampling
-        θ, z, z_mask, z_parity = limb_sampling_refine(w0, ρ, _params, θ, z, z_mask, z_parity, npts_add)
+        θ, z, z_mask, z_parity = limb_sampling_refine(w0, ρ, _params, θ, z, z_mask, z_parity, nlenses, npts_add)
 
         # Permute image in correct order
         z, z_mask, z_parity = permute_images(z, z_mask, z_parity)

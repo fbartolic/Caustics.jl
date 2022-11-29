@@ -1,5 +1,9 @@
 module PointSource
 
+include("Utils.jl")
+
+import .Utils: match_points
+
 export images_point_source, critical_and_caustic_curves, mag_point_source
 
 using StaticArrays
@@ -1532,13 +1536,9 @@ end
 function lens_eq(z::ComplexF64, params::Dict, nlenses::Int=2)
     zbar = conj(z)
 
-    if nlenses == 1
-        return z - 1 / zbar
-
-    elseif nlenses == 2
+    if nlenses == 2
         a, e1 = params["a"], params["e1"]
         return z - e1 / (zbar- a)- (1.0 - e1) / (zbar+ a)
-
     elseif nlenses == 3
         a, r3, e1, e2 = params["a"], params["r3"], params["e1"], params["e2"]
         return (
@@ -1547,7 +1547,6 @@ function lens_eq(z::ComplexF64, params::Dict, nlenses::Int=2)
            - e2 / (zbar + a)
            - (1.0- e1- e2) / (zbar- conj(r3))
         )
-
     else
         throw(ArgumentError("`nlenses` has to be set to be <= 3."))
     end
@@ -1561,7 +1560,7 @@ function lens_eq_det_jac(z::ComplexF64, params::Dict, nlenses::Int=2)
 
     elseif nlenses == 2
         a, e1 = params["a"], params["e1"]
-        return 1.0- abs(e1 / (zbar- a) ^ 2+ (1.0- e1) / (zbar+ a) ^ 2) ^ 2
+        return 1.0- abs(e1 / (zbar - a) ^ 2+ (1.0 - e1) / (zbar + a) ^ 2) ^ 2
 
     elseif nlenses == 3
         a, r3, e1, e2 = params["a"], params["r3"], params["e1"], params["e2"]
@@ -1579,7 +1578,7 @@ function lens_eq_det_jac(z::ComplexF64, params::Dict, nlenses::Int=2)
     end
 end
 
-function critical_and_caustic_curves(params::Dict, nlenses::Int=2, npts::Int=200)
+function critical_and_caustic_curves(params::Dict, nlenses::Int=2, npts::Int=400)
     ϕ = collect(LinRange(-π, π, npts))
     coeffs = zeros(ComplexF64, npts, 2*nlenses + 1)
     z_cr = zeros(ComplexF64, npts, 2*nlenses)
@@ -1593,14 +1592,14 @@ function critical_and_caustic_curves(params::Dict, nlenses::Int=2, npts::Int=200
             coeffs[i, :] = poly_coeffs_critical_binary(ϕ[i], a, e1)
             z_cr[i, :] = roots(coeffs[i, :])
         end
-
     elseif nlenses == 3
         s, q, q3, r3, psi = params["s"], params["q"], params["q3"], params["r3"], params["psi"]
         a, e1, e2 = 0.5*s, q*q/(1 + q + q3), q/(1 + q + q3)
+        r3 = r3*exp(1im*psi)
         _params = Dict("a" => a, "r3" => r3, "e1" => e1, "e2" => e2)
 
         for i in 1:npts
-            coeffs[i, :] = poly_coeffs_critical_binary(ϕ[i], a, e1)
+            coeffs[i, :] = poly_coeffs_critical_triple(ϕ[i], a, r3, e1, e2)
             z_cr[i, :] = roots(coeffs[i, :])
         end
     else
@@ -1649,10 +1648,10 @@ function images_point_source(
         a, r3, e1, e2 = params["a"], params["r3"], params["e1"], params["e2"]
         # Compute complex polynomial coefficients for each element of w
         coeffs = poly_coeffs_triple(w, a, r3, e1, e2)
-        if roots == nothing
+        if roots_init == nothing
             z = roots(Vector(coeffs))
         else
-            z = roots(Vector(coeffs), roots_init)
+            z = roots(Vector(coeffs), Vector(roots_init))
         end
         z_mask = SVector{10, Bool}(abs(lens_eq(z[i], params, nlenses) - w) .< 1e-06 for i in 1:10)
     
