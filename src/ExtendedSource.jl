@@ -128,37 +128,34 @@ Split a fixed-size array of point source images into variable sized chunks (segm
 such that each part consists of only real images with the same parity and there are 
 no large jumps in distance between consecutive images. 
 """
-function process_open_segments(segments)
-    # Split a single segment such that each part consists of only real images 
-    # with the same parity such that there are no large jumps in distance between
-    # consecutive images.
-    segments_split = []
-
+function process_open_segments(segments, max_dist::Float64=0.05)
     # Iterate over open segments
+    segments_final = []
     for seg in segments
         z, z_mask, z_parity = seg["z"], seg["z_mask"], seg["z_parity"]
         # Iterate over points in each segment
         idx = 1
         for i in 1:length(z) - 1
-            if (z_mask[i] != z_mask[i+1]) || (z_parity[i] != z_parity[i+1]) || (i == length(z) - 1)
+            split_condition = z_mask[i] != z_mask[i+1] || z_parity[i] != z_parity[i+1] || i == length(z) - 1  || abs2(z[i+1] - z[i]) > max_dist^2
+            if split_condition
+                _z, _z_mask, _z_parity = z[idx:i], z_mask[idx:i], z_parity[idx:i]
+
+                # Save to list if there are no false images and the segment has at least 3 points
                 # Split segment
-                push!(segments_split, Dict("z" => z[idx:i], "z_mask" => z_mask[idx:i], "z_parity" => z_parity[idx:i]))
+                if (sum(_z_mask) > 0) && length(_z) >= 3
+                    push!(segments_final, Segment(_z, _z_parity[1], get_segment_length(_z)))
+                end
                 idx = i + 1
             end
         end
         if idx != length(z) - 1
-            push!(segments_split, Dict("z" => z[idx:end], "z_mask" => z_mask[idx:end], "z_parity" => z_parity[idx:end]))
+            _z, _z_mask, _z_parity = z[idx:end], z_mask[idx:end], z_parity[idx:end]
+            if (sum(_z_mask) > 0) && length(_z) >= 3
+                push!(segments_final, Segment(_z, _z_parity[1], get_segment_length(_z)))
+            end
         end
     end
 
-    # Remove segments with false images or those with fewer than 3 points
-    segments_final = []
-    for seg in segments_split
-        z, z_mask, z_parity = seg["z"], seg["z_mask"], seg["z_parity"]
-        if (sum(z_mask) > 0) && length(z) >= 3
-            push!(segments_final, Segment(z, z_parity[1], get_segment_length(z)))
-        end
-    end
     return segments_final
 end
 
@@ -199,21 +196,6 @@ function get_segments(z::Matrix{ComplexF64}, z_mask::Matrix{Bool}, z_parity::Mat
     return segments_closed, segments_open
 end
 
-function merge_two_segments(seg1::Segment, seg2::Segment, ctype::String)
-    if ctype == "hh"
-        seg2.z = reverse(seg2.z) # flip
-        seg2.parity = -seg2.parity # flip parity
-        return Segment(vcat(seg2.z, seg1.z), seg2.parity, seg1.length + seg2.length)
-    elseif ctype == "tt"
-        seg2.z = reverse(seg2.z) # flip
-        seg2.parity = -seg2.parity # flip parity
-        return Segment(vcat(seg1.z, seg2.z), seg2.parity, seg1.length + seg2.length)
-    elseif ctype == "th"
-        return Segment(vcat(seg1.z, seg2.z), seg2.parity, seg1.length + seg2.length)
-    elseif ctype == "ht"
-        return Segment(vcat(seg2.z, seg1.z), seg2.parity, seg1.length + seg2.length)
-    end
-end
 
 """
 Dermine wether two segments should be connected or not for a specific
@@ -232,6 +214,11 @@ We use four criterions to determine if the segments should be connected:
         less than the distance between the other two points.
     3. The distance between two potential connection points must be less
         than `max_dist`.
+    4. The angle between two lines formed by the endpoints of each segment 
+        must be greater than `min_ang`.
+    5. If we form two line segments extended by a fixed distance from the 
+        endpoints of each segment, the line segments must either intersect 
+        or they have to be colinear.
 
 If the distance between the two connection points is less than `min_dist`,
 and the parity condition is satisfied the function returns `True`
@@ -244,8 +231,9 @@ function connection_condition(
     seg1::Segment,
     seg2::Segment,
     ctype::String,
-    min_dist=1e-05::Float64,
+    min_dist=5e-05::Float64,
     max_dist=0.08::Float64,
+    min_ang=90.0::Float64,
 )
     if ctype == "th"
         line1 = [seg1.z[end-1], seg1.z[end]]
@@ -288,7 +276,68 @@ function connection_condition(
         return false
     end
 
-    return true
+    # Criterion 4
+    u1 = (line1[2] - line1[1]) / abs(line1[2] - line1[1])
+    u2 = (line2[2] - line2[1]) / abs(line2[2] - line2[1])
+    α = acos(u1.re.*u2.re + u1.im.*u2.im) 
+    if (180 - rad2deg(α)) > min_ang
+        return false
+    end
+
+    # Criterion 5
+    # for each contour segment, take two end points, extend the line defined by 
+    # these two points by a distance d in the direction of the contour, and 
+    # then check if these two line segments intersect.
+    d = 0.1
+    line1[2] = line1[2] + d * u1
+    line2[2] = line2[2] + d * u2
+
+    # Check if the line segments intersect. See 
+    # https://stackoverflow.com/questions/563198/how-do-you-detect-where-two-line-segments-intersect 
+    cross(z1, z2) = real(z1)*imag(z2) - imag(z1)*real(z2)
+    p, q, r, s = line1[1], line2[1], (line1[2] - line1[1]), (line2[2] - line2[1])
+    t = cross((q - p), s)/cross(r, s)
+    u = cross((p - q), r)/cross(s, r)
+
+    cond1 = abs(cross(r, s)) < 1e-5
+    cond2 = abs(cross(q - p, r)) < 1e-5
+ 
+    # Two line segments are colinear
+    if cond1 && cond2
+        criterion4 = true
+    # Two line segments are parallel and non-intersecting
+    elseif cond1 && !cond2
+        criterion4 = false
+    # Two line segments intersect at point p + t*r  
+    elseif !cond1 && 0 <= t <= 1 && 0 <= u <= 1
+        intersection_point = p + t*r
+        if abs(line1[2] - intersection_point) < 0.15 && abs(line2[2] - intersection_point) < 0.15
+            criterion4 = true
+        else
+            criterion4 = false
+        end
+    # Line segments do not intersect
+    else
+        criterion4 = false
+    end
+
+    return criterion4
+end
+
+function merge_two_segments(seg1::Segment, seg2::Segment, ctype::String)
+    if ctype == "hh"
+        seg2.z = reverse(seg2.z) # flip
+        seg2.parity = -seg2.parity # flip parity
+        return Segment(vcat(seg2.z, seg1.z), seg2.parity, seg1.length + seg2.length)
+    elseif ctype == "tt"
+        seg2.z = reverse(seg2.z) # flip
+        seg2.parity = -seg2.parity # flip parity
+        return Segment(vcat(seg1.z, seg2.z), seg2.parity, seg1.length + seg2.length)
+    elseif ctype == "th"
+        return Segment(vcat(seg1.z, seg2.z), seg2.parity, seg1.length + seg2.length)
+    elseif ctype == "ht"
+        return Segment(vcat(seg2.z, seg1.z), seg2.parity, seg1.length + seg2.length)
+    end
 end
 
 
@@ -360,7 +409,7 @@ function merge_open_segments(segments_open)
             # length, set the stopping criterion to true
 
             # If we found a segment to connect to, merge the two segments
-            if min_dist_index != 0 
+            if min_dist_index != 0 && abs(seg_active.z[end] - seg_active.z[1]) > 0.001*seg_active.length
                 seg_active = merge_two_segments(seg_active, segments_open[min_dist_index], min_dist_ctype)
                 deleteat!(segments_open, min_dist_index)
             # Otherwise save the active segment to merged segments and exit the loop
@@ -372,8 +421,11 @@ function merge_open_segments(segments_open)
         end
     end
 
-    # Remove segments for which the distance between the end points is less than 10% of the segment length
+    # Remove segments for which the distance between the end points is greater than 50% of the segment length
     segments_closed = filter(seg -> abs(seg.z[end] - seg.z[1]) < 0.5*get_segment_length(seg.z), segments_closed)
+
+    # Remove segments with fewer than 10 points
+    segments_closed = filter(seg -> length(seg.z) > 10, segments_closed)
 
     return segments_closed
 end
@@ -402,12 +454,14 @@ function mag_extended_source(
     nlenses=2::Int,
     u1=0.::Float64, 
     rtol=1e-03::Float64, 
-    npts_init=100::Int, 
-    npts_add=20::Int,  
+    npts_init=ifelse(nlenses == 2, 100, 150)::Int,
+    npts_add=30::Int,  
     maxiter=10::Int
 )
-    if npts_init < 100
+    if nlenses == 2 && npts_init < 100
         println("WARNING: npts_init < 100. This may cause issues with the contour construction algorithm.")
+    elseif nlenses == 3 && npts_init < 150 
+        println("WARNING: npts_init < 150. This may cause issues with the contour construction algorithm.")
     end
 
     if nlenses == 2
@@ -434,8 +488,9 @@ function mag_extended_source(
     # Initial sampling: uniformly sample `npts_init` points on the limb and then 
     # add additional `npts_init` points in 10 refinement steps
     θ, z, z_mask, z_parity = limb_sampling_initial(w0, ρ, _params, nlenses, npts_init)
-    for _ in 1:10
-        θ, z, z_mask, z_parity = limb_sampling_refine(w0, ρ, _params, θ, z, z_mask, z_parity, nlenses, Int(round(npts_init/10.)))
+    nsteps = 10
+    for _ in 1:nsteps
+        θ, z, z_mask, z_parity = limb_sampling_refine(w0, ρ, _params, θ, z, z_mask, z_parity, nlenses, Int(round(npts_init/nsteps)))
     end
 
     # Final sampling: Add `npts_add` in a loop until the relative change in the
