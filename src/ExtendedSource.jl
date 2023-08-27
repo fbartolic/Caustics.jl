@@ -474,8 +474,10 @@ function mag_extended_source(
         w0 -= x_cm
     elseif nlenses == 3
         s, q, q3, r3, psi = params["s"], params["q"], params["q3"], params["r3"], params["psi"]
-        a, e1, e2 = 0.5*s, q*q/(1 + q + q3), q/(1 + q + q3)
-        r3 = r3*exp(1im*psi)
+        # a, e1, e2 = 0.5*s, q*q/(1 + q + q3), q/(1 + q + q3)
+        # r3 = r3*exp(1im*psi)
+        a, e1, e2 = 0.5*s, q/(1 + q + q3), 1/(1 + q + q3)
+        r3 = r3*exp(1im*psi) - a
         _params = Dict("a" => a, "r3" => r3, "e1" => e1, "e2" => e2)
 
         # Shift w by x_cm
