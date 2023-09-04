@@ -105,6 +105,8 @@ starting with the highest order term.
 
 Polynomial coefficients, in order of increasing power.
 """
+
+
 function poly_coeffs_triple(w::ComplexF64, a::Float64, r3::ComplexF64, e1::Float64, e2::Float64)
     wbar = conj(w)
     r3bar = conj(r3)
@@ -1594,8 +1596,8 @@ function critical_and_caustic_curves(params::Dict, nlenses::Int=2, npts::Int=400
         end
     elseif nlenses == 3
         s, q, q3, r3, psi = params["s"], params["q"], params["q3"], params["r3"], params["psi"]
-        a, e1, e2 = 0.5*s, q*q/(1 + q + q3), q/(1 + q + q3)
-        r3 = r3*exp(1im*psi)
+        a, e1, e2 = 0.5*s, q/(1 + q + q3), 1/(1 + q + q3)
+        r3 = r3*exp(1im*psi) - a
         _params = Dict("a" => a, "r3" => r3, "e1" => e1, "e2" => e2)
 
         for i in 1:npts
@@ -1700,12 +1702,12 @@ function mag_point_source(w::ComplexF64, params::Dict, nlenses=2)
         w -= x_cm
     elseif nlenses == 3
         s, q, q3, r3, psi = params["s"], params["q"], params["q3"], params["r3"], params["psi"]
-        a, e1, e2 = 0.5*s, q*q/(1 + q + q3), q/(1 + q + q3)
-        r3 = r3*exp(1im*psi)
+        a, e1, e2 = 0.5*s, q/(1 + q + q3), 1/(1 + q + q3)
+        r3 = r3*exp(1im*psi) - a
         _params = Dict("a" => a, "r3" => r3, "e1" => e1, "e2" => e2)
 
         # Shift w by x_cm
-        x_cm = 0.5*s*(1-q)/(1 + q)
+        x_cm = 0.5*s*(1-q)/(1+q)
         w -= x_cm
     else
         throw(ArgumentError("`nlenses` has to be set to be <= 3."))
