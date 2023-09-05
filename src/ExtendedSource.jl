@@ -14,15 +14,21 @@ mutable struct Segment
     z::Vector{ComplexF64}
     parity::Int
     length::Float64
+
+    function Segment(z::Vector{Complex{Float64}}, parity::Any)
+        l = 0.
+        for i in 1:length(z) - 1
+            l += abs(z[i+1] - z[i])
+        end
+        l += abs(z[1] - z[end])
+        new(z, parity, l)
+    end
 end
 
-function get_segment_length(z::Vector{ComplexF64})
-    res = 0.
-    for i in 1:length(z) - 1
-        res += abs(z[i+1] - z[i])
-    end
-    res += abs(z[1] - z[end])
-    return res 
+struct ComplexVector
+    tail::ComplexF64
+    head::ComplexF64
+    parity::Int
 end
 
 """
@@ -143,7 +149,7 @@ function process_open_segments(segments, max_dist::Float64=0.05)
                 # Save to list if there are no false images and the segment has at least 3 points
                 # Split segment
                 if (sum(_z_mask) > 0) && length(_z) >= 3
-                    push!(segments_final, Segment(_z, _z_parity[1], get_segment_length(_z)))
+                    push!(segments_final, Segment(_z, _z_parity[1]))
                 end
                 idx = i + 1
             end
@@ -151,7 +157,7 @@ function process_open_segments(segments, max_dist::Float64=0.05)
         if idx != length(z) - 1
             _z, _z_mask, _z_parity = z[idx:end], z_mask[idx:end], z_parity[idx:end]
             if (sum(_z_mask) > 0) && length(_z) >= 3
-                push!(segments_final, Segment(_z, _z_parity[1], get_segment_length(_z)))
+                push!(segments_final, Segment(_z, _z_parity[1]))
             end
         end
     end
@@ -182,7 +188,7 @@ function get_segments(z::Matrix{ComplexF64}, z_mask::Matrix{Bool}, z_parity::Mat
     # Process closed segments
     segments_closed = Segment[]
     for seg in segments_interim_closed
-        push!(segments_closed, Segment(seg["z"], seg["z_parity"][1], 0.))
+        push!(segments_closed, Segment(seg["z"], seg["z_parity"][1]))
     end
 
     # Process open segments if there are any
@@ -198,22 +204,18 @@ end
 
 
 """
-Dermine wether two segments should be connected or not for a specific
-type of connection. We differentiate between four types of connections:
-    - `ctype` == 0: Tail-Head connection
-    - `ctype` == 1: Head-Tail connection
-    - `ctype` == 2: Head-Head connection
-    - `ctype` == 3: Tail-Tail connection
-
-We use four criterions to determine if the segments should be connected:
-    1. For T-H and H-T the two segments need to have the same parity and
+Dermine wether two segments should be connected or not given the specified type 
+of connection. The function returns `True` if the segments should be connected.
+    
+There are four conditions that need to be satisfied for the function to return `True`:
+    1. For T-H and H-T connections the two segments need to have the same parity and
         for H-H and T-T connections they need to have opposite parity.
     2. If we form a line consisting of two points at the end of each segment,
         such that the second point is the connection point, the distance
         between two potential connection points of the segments must be
         less than the distance between the other two points.
     3. The distance between two potential connection points must be less
-        than `max_dist`.
+        than the length of the shorter segment.
     4. The angle between two lines formed by the endpoints of each segment 
         must be greater than `min_ang`.
     5. If we form two line segments extended by a fixed distance from the 
@@ -223,120 +225,115 @@ We use four criterions to determine if the segments should be connected:
 If the distance between the two connection points is less than `min_dist`,
 and the parity condition is satisfied the function returns `True`
 irrespective of the other conditions.
-
-All of this is to ensure that we avoid connecting two segments which
-shouldn't be connected.
 """
 function connection_condition(
     seg1::Segment,
     seg2::Segment,
-    ctype::String,
+    connection_type::String,
     min_dist=5e-05::Float64,
-    max_dist=0.08::Float64,
     min_ang=90.0::Float64,
 )
-    if ctype == "th"
-        line1 = [seg1.z[end-1], seg1.z[end]]
-        line2 = [seg2.z[2], seg2.z[1]]
-    elseif ctype == "ht"
-        line1 = [seg1.z[2], seg1.z[1]]
-        line2 = [seg2.z[end-1], seg2.z[end]]
-    elseif ctype == "hh"
-        line1 = [seg1.z[2], seg1.z[1]]
-        line2 = [seg2.z[2], seg2.z[1]]
-    elseif ctype == "tt"
-        line1 = [seg1.z[end-1], seg1.z[end]]
-        line2 = [seg2.z[end-1], seg2.z[end]]
+    if connection_type == "head-tail"
+        vec1 = ComplexVector(seg1.z[end-1], seg1.z[end], seg1.parity)
+        vec2 = ComplexVector(seg2.z[2], seg2.z[1], seg2.parity)
+    elseif connection_type == "tail-head"
+        vec1 = ComplexVector(seg1.z[2], seg1.z[1], seg1.parity)
+        vec2 = ComplexVector(seg2.z[end-1], seg2.z[end], seg2.parity)
+    elseif connection_type == "tail-tail"
+        vec1 = ComplexVector(seg1.z[2], seg1.z[1], seg1.parity)
+        vec2 = ComplexVector(seg2.z[2], seg2.z[1], seg2.parity)
+    elseif connection_type == "head-head"
+        vec1 = ComplexVector(seg1.z[end-1], seg1.z[end], seg1.parity)
+        vec2 = ComplexVector(seg2.z[end-1], seg2.z[end], seg2.parity)
     end
 
-    # If the distance between the two connection points is less than `min_dist`,
-    # return true 
-    if abs2(line1[2] - line2[2]) < min_dist^2
+    if abs2(vec1.head - vec2.head) < min_dist^2
         return true
     end
 
-    # Criterion 1
-    if ctype == "th" || ctype == "ht"
-        if seg1.parity != seg2.parity
-            return false
+    function condition1(connection_type, seg1, seg2)
+        if connection_type == "head-tail" || connection_type == "tail-head"
+            return seg1.parity == seg2.parity
+        elseif connection_type == "head-head" || connection_type == "tail-tail"
+            return seg1.parity != seg2.parity
         end
-    elseif ctype == "hh" || ctype == "tt"
-        if seg1.parity == seg2.parity
-            return false
+        return true
+    end
+
+    function condition2(vec1, vec2)
+        return abs2(vec1.head - vec2.head) <= abs2(vec1.tail - vec2.tail)
+    end
+
+    function condition3(vec1, vec2, seg1, seg2)
+        return abs2(vec1.head - vec2.head) <= (min(seg1.length, seg2.length))^2
+    end
+
+    function condition4(vec1, vec2, min_ang)
+        u1 = (vec1.head - vec1.tail) / abs(vec1.head - vec1.tail)
+        u2 = (vec2.head - vec2.tail) / abs(vec2.head - vec2.tail)
+        α = acos(u1.re.*u2.re + u1.im.*u2.im)
+        return (180 - rad2deg(α)) <= min_ang
+    end
+
+    function condition5(vec1, vec2, d)
+        function cross(z1, z2)
+            return real(z1) * imag(z2) - imag(z1) * real(z2)
         end
-    end
 
-    # Criterion 2
-    if abs2(line1[2] - line2[2]) > abs2(line1[1] - line2[1])
-        return false
-    end
+        u1 = (vec1.head - vec1.tail) / abs(vec1.head - vec1.tail)
+        u2 = (vec2.head - vec2.tail) / abs(vec2.head - vec2.tail)
 
-    # Criterion 3
-    if abs2(line1[2] - line2[2]) > max_dist^2
-        return false
-    end
+        vec1 = ComplexVector(vec1.tail, vec1.head + d * u1, vec1.parity)
+        vec2 = ComplexVector(vec2.tail, vec2.head + d * u2, vec2.parity)
 
-    # Criterion 4
-    u1 = (line1[2] - line1[1]) / abs(line1[2] - line1[1])
-    u2 = (line2[2] - line2[1]) / abs(line2[2] - line2[1])
-    α = acos(u1.re.*u2.re + u1.im.*u2.im) 
-    if (180 - rad2deg(α)) > min_ang
-        return false
-    end
+        p, q, r, s = vec1.tail, vec2.tail, (vec1.head - vec1.tail), (vec2.head - vec2.tail)
+        t = cross((q - p), s)/cross(r, s)
+        u = cross((p - q), r)/cross(s, r)
 
-    # Criterion 5
-    # for each contour segment, take two end points, extend the line defined by 
-    # these two points by a distance d in the direction of the contour, and 
-    # then check if these two line segments intersect.
-    d = 0.1
-    line1[2] = line1[2] + d * u1
-    line2[2] = line2[2] + d * u2
+        cond1 = abs(cross(r, s)) < 1e-5
+        cond2 = abs(cross(q - p, r)) < 1e-5
 
-    # Check if the line segments intersect. See 
-    # https://stackoverflow.com/questions/563198/how-do-you-detect-where-two-line-segments-intersect 
-    cross(z1, z2) = real(z1)*imag(z2) - imag(z1)*real(z2)
-    p, q, r, s = line1[1], line2[1], (line1[2] - line1[1]), (line2[2] - line2[1])
-    t = cross((q - p), s)/cross(r, s)
-    u = cross((p - q), r)/cross(s, r)
-
-    cond1 = abs(cross(r, s)) < 1e-5
-    cond2 = abs(cross(q - p, r)) < 1e-5
- 
-    # Two line segments are colinear
-    if cond1 && cond2
-        criterion4 = true
-    # Two line segments are parallel and non-intersecting
-    elseif cond1 && !cond2
-        criterion4 = false
-    # Two line segments intersect at point p + t*r  
-    elseif !cond1 && 0 <= t <= 1 && 0 <= u <= 1
-        intersection_point = p + t*r
-        if abs(line1[2] - intersection_point) < 0.15 && abs(line2[2] - intersection_point) < 0.15
-            criterion4 = true
+        if cond1 && cond2
+            return true
+        elseif cond1 && !cond2
+            return false
+        elseif !cond1 && 0 <= t <= 1 && 0 <= u <= 1
+            intersection_point = p + t*r
+            return abs(vec1.head - intersection_point) < 0.15 && abs(vec2.head - intersection_point) < 0.15
         else
-            criterion4 = false
+            return false
         end
-    # Line segments do not intersect
-    else
-        criterion4 = false
     end
 
-    return criterion4
+    if !condition1(connection_type, seg1, seg2)
+        return false
+    elseif !condition2(vec1, vec2)
+        return false
+    elseif !condition3(vec1, vec2, seg1, seg2)
+        return false
+    elseif !condition4(vec1, vec2, min_ang)
+        return false
+    elseif !condition5(vec1, vec2, 0.1)
+        return false
+    end
+
+    return true
+
 end
 
-function merge_two_segments(seg1::Segment, seg2::Segment, ctype::String)
-    if ctype == "hh"
+function merge_two_segments(seg1::Segment, seg2::Segment, connection_type::String)
+    if connection_type == "tail-tail"
         seg2.z = reverse(seg2.z) # flip
         seg2.parity = -seg2.parity # flip parity
-        return Segment(vcat(seg2.z, seg1.z), seg2.parity, seg1.length + seg2.length)
-    elseif ctype == "tt"
+        return Segment(vcat(seg2.z, seg1.z), seg2.parity)
+    elseif connection_type == "head-head"
         seg2.z = reverse(seg2.z) # flip
         seg2.parity = -seg2.parity # flip parity
-        return Segment(vcat(seg1.z, seg2.z), seg2.parity, seg1.length + seg2.length)
-    elseif ctype == "th"
-        return Segment(vcat(seg1.z, seg2.z), seg2.parity, seg1.length + seg2.length)
-    elseif ctype == "ht"
-        return Segment(vcat(seg2.z, seg1.z), seg2.parity, seg1.length + seg2.length)
+        return Segment(vcat(seg1.z, seg2.z), seg2.parity)
+    elseif connection_type == "head-tail"
+        return Segment(vcat(seg1.z, seg2.z), seg2.parity)
+    elseif connection_type == "tail-head"
+        return Segment(vcat(seg2.z, seg1.z), seg2.parity)
     end
 end
 
@@ -355,14 +352,14 @@ merging algorithm is as follows:
 """
 function merge_open_segments(segments_open)
 
-    function get_connection_distance(seg1, seg2, ctype)
-        if ctype == "th"
+    function get_connection_distance(seg1, seg2, connection_type)
+        if connection_type == "head-tail"
             return abs(seg1.z[end] - seg2.z[1])
-        elseif ctype == "ht"
+        elseif connection_type == "tail-head"
             return abs(seg1.z[1] - seg2.z[end])
-        elseif ctype == "hh"
+        elseif connection_type == "tail-tail"
             return abs(seg1.z[1] - seg2.z[1])
-        elseif ctype == "tt"
+        elseif connection_type == "head-head"
             return abs(seg1.z[end] - seg2.z[end])
         end
     end
@@ -370,22 +367,22 @@ function merge_open_segments(segments_open)
     function find_best_connection(seg_active, segments)
         min_dist = Inf
         min_dist_index = 0
-        min_dist_ctype = ""
+        min_dist_connection_type = ""
 
         for i in 1:length(segments)
             seg = segments[i]
-            for ctype in ["th", "ht", "hh", "tt"]
-                if connection_condition(seg_active, seg, ctype)
-                    dist = get_connection_distance(seg_active, seg, ctype)
+            for connection_type in ["head-tail", "tail-head", "tail-tail", "head-head"]
+                if connection_condition(seg_active, seg, connection_type)
+                    dist = get_connection_distance(seg_active, seg, connection_type)
                     if dist < min_dist
                         min_dist = dist
                         min_dist_index = i
-                        min_dist_ctype = ctype
+                        min_dist_connection_type = connection_type
                     end
                 end
             end
         end
-        return min_dist_index, min_dist_ctype
+        return min_dist_index, min_dist_connection_type
     end
 
     segments_closed = Segment[] # Merged segments 
@@ -398,31 +395,31 @@ function merge_open_segments(segments_open)
         seg_active = segments_open[1]
         deleteat!(segments_open, 1)
  
-        stopping_criterion = false
+        stopping_condition = false
 
-        while stopping_criterion == false
+        while stopping_condition == false
             # Search over all segments and connection types to find a segment to 
             # connect to (closest distance and valid connection)
-            min_dist_index, min_dist_ctype = find_best_connection(seg_active, segments_open)
+            min_dist_index, min_dist_connection_type = find_best_connection(seg_active, segments_open)
 
             # If the distance between the end points of the active segment is less than 2% of its 
-            # length, set the stopping criterion to true
+            # length, set the stopping condition to true
 
             # If we found a segment to connect to, merge the two segments
             if min_dist_index != 0 && abs(seg_active.z[end] - seg_active.z[1]) > 0.001*seg_active.length
-                seg_active = merge_two_segments(seg_active, segments_open[min_dist_index], min_dist_ctype)
+                seg_active = merge_two_segments(seg_active, segments_open[min_dist_index], min_dist_connection_type)
                 deleteat!(segments_open, min_dist_index)
             # Otherwise save the active segment to merged segments and exit the loop
             else
                 # Save the active segment 
                 push!(segments_closed, seg_active)
-                stopping_criterion = true
+                stopping_condition = true
             end
         end
     end
 
     # Remove segments for which the distance between the end points is greater than 50% of the segment length
-    segments_closed = filter(seg -> abs(seg.z[end] - seg.z[1]) < 0.5*get_segment_length(seg.z), segments_closed)
+    segments_closed = filter(seg -> abs(seg.z[end] - seg.z[1]) < 0.5*seg.length, segments_closed)
 
     # Remove segments with fewer than 10 points
     segments_closed = filter(seg -> length(seg.z) > 10, segments_closed)
@@ -456,7 +453,8 @@ function mag_extended_source(
     rtol=1e-03::Float64, 
     npts_init=ifelse(nlenses == 2, 100, 150)::Int,
     npts_add=30::Int,  
-    maxiter=10::Int
+    maxiter=10::Int,
+    debug=false::Bool,
 )
     if nlenses == 2 && npts_init < 100
         println("WARNING: npts_init < 100. This may cause issues with the contour construction algorithm.")
@@ -500,6 +498,14 @@ function mag_extended_source(
     err_rel = Inf
     mag = Inf
     contours = []
+
+    if debug == true
+        maxiter = 1
+    end
+
+    segments_closed = Segment[]
+    segments_open = Segment[]
+    segments_merged = Segment[]
     
     i = 0
     while (err_rel > rtol) && (i < maxiter)
@@ -542,6 +548,19 @@ function mag_extended_source(
         mag = mag_new
         i += 1
     end
-    return i, contours, abs(mag)
+    
+    if debug == true
+        res = Dict(
+            "mag" => abs(mag), 
+            "contours" => contours, 
+            "segments_closed" => segments_closed, 
+            "segments_open" => segments_open, 
+            "segments_merged" => segments_merged
+        )
+    else
+        res = Dict("mag" => abs(mag), "contours" => contours, "n_iter" => i)
+    end
+
+    return res
 end
 end
