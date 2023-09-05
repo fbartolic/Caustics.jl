@@ -1592,7 +1592,7 @@ function critical_and_caustic_curves(params::Dict, nlenses::Int=2, npts::Int=400
     
         for i in 1:npts
             coeffs[i, :] = poly_coeffs_critical_binary(ϕ[i], a, e1)
-            z_cr[i, :] = roots(coeffs[i, :])
+            z_cr[i, :] = roots(coeffs[i, :], polish=true)
         end
     elseif nlenses == 3
         s, q, q3, r3, psi = params["s"], params["q"], params["q3"], params["r3"], params["psi"]
@@ -1602,7 +1602,7 @@ function critical_and_caustic_curves(params::Dict, nlenses::Int=2, npts::Int=400
 
         for i in 1:npts
             coeffs[i, :] = poly_coeffs_critical_triple(ϕ[i], a, r3, e1, e2)
-            z_cr[i, :] = roots(coeffs[i, :])
+            z_cr[i, :] = roots(coeffs[i, :], polish=true)
         end
     else
         throw(ArgumentError("`nlenses` has to be set to be <= 3."))
@@ -1640,9 +1640,9 @@ function images_point_source(
         coeffs = poly_coeffs_binary(w, a, e1)
         if roots_init == nothing
             # Compute the roots of the polynomial
-            z = roots(Vector(coeffs))
+            z = roots(Vector(coeffs), polish=true)
         else
-            z = roots(Vector(coeffs), Vector(roots_init))
+            z = roots(Vector(coeffs), Vector(roots_init), polish=true)
         end
         z_mask = SVector{5, Bool}(abs(lens_eq(z[i], params, nlenses) - w) .< 1e-06 for i in 1:5)
 
@@ -1651,9 +1651,9 @@ function images_point_source(
         # Compute complex polynomial coefficients for each element of w
         coeffs = poly_coeffs_triple(w, a, r3, e1, e2)
         if roots_init == nothing
-            z = roots(Vector(coeffs))
+            z = roots(Vector(coeffs), polish=true)
         else
-            z = roots(Vector(coeffs), Vector(roots_init))
+            z = roots(Vector(coeffs), Vector(roots_init), polish=true)
         end
         z_mask = SVector{10, Bool}(abs(lens_eq(z[i], params, nlenses) - w) .< 1e-06 for i in 1:10)
     
